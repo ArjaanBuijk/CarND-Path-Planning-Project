@@ -1,0 +1,7 @@
+.vscode
+build
+tags
+.editorconfig
+.DS_Store
+bin
+obj
