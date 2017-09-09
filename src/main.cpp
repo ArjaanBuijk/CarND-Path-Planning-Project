@@ -30,26 +30,29 @@ double m2inch(double x) { return x / 0.0254; }
 
 // Highway has 6 lanes- 3 heading in each direction.
 // Each lane is 4 m wide.
-const double lane_width = 4.0;
-const vector<double> d_lane = {0.5*lane_width, 1.5*lane_width, 2.5*lane_width}; // d of left, middle, right lane center line
+const double LANE_WIDTH = 4.0;
+const vector<double> D_LANES = {0.5*LANE_WIDTH, 1.5*LANE_WIDTH, 2.5*LANE_WIDTH}; // d of left, middle, right lane center line
 
-// Typical car width & length in USA
+// Use typical width & length in USA for both car and objects
 // See: https://www.reference.com/vehicles/width-length-average-car-9eb7b00283fb1bd8
-const double car_width  = inch2m(75.0);
-const double car_length = inch2m(200.0);
+const double CAR_WIDTH     = inch2m(75.0);
+const double CAR_LENGTH    = inch2m(200.0);
+const double OBJECT_WIDTH  = inch2m(75.0);
+const double OBJECT_LENGTH = inch2m(200.0);
+
 
 // Speedlimit
-const double speed_limit = mph2mps(50);
+const double SPEED_LIMIT = mph2mps(50);
 
 // Target velocity a little bit below the speedlimit
-const double speed_target = mph2mps(49.5);
+const double SPEED_TARGET = mph2mps(49.5);
 
-// Flag danger when the gap with car in front is too close
-const double gap_too_close = 30.0;
+// Flag danger when the gap with object in front is too close
+const double MIN_GAP_TO_FRONT_OBJECT = 30.0;
 
 // Change in ref_vel per cycle to use when it can accellerate or when it needs to slow down
 // This value is chosen to stay within allowed longitudinal jerk
-const double ideal_dvel = 0.224;
+const double MAX_VEL_CHANGE = 0.224;
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -195,17 +198,15 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 }
 
 
-// Helper function to check if a car is in a certain lane
-bool car_in_lane(double d,int lane){
-
-  if ( d+0.5*car_width > d_lane[lane]-0.5*lane_width &&
-       d-0.5*car_width < d_lane[lane]+0.5*lane_width ){
+// Helper function to check if an object is in a certain lane
+bool is_object_in_lane(double d, int lane){
+  if ( d+0.5*OBJECT_WIDTH > D_LANES[lane]-0.5*LANE_WIDTH &&
+       d-0.5*OBJECT_WIDTH < D_LANES[lane]+0.5*LANE_WIDTH ){
     return true;
   }
   else{
     return false;
   }
-
 }
 
 int main() {
@@ -273,7 +274,7 @@ int main() {
         if (event == "telemetry") {
           // j[1] is the data JSON object
 
-        	// Main car's localization Data
+        	// car's localization Data
           double car_x = j[1]["x"];
           double car_y = j[1]["y"];
           double car_s = j[1]["s"];
@@ -336,7 +337,7 @@ int main() {
           for (size_t i=0; i<sensor_fusion.size(); ++i){
             float d = sensor_fusion[i][6];
 
-            if (car_in_lane(d,lane)){
+            if (is_object_in_lane(d,lane)){
               double vx = sensor_fusion[i][3];
               double vy = sensor_fusion[i][4];
               double check_speed = sqrt(vx*vx+vy*vy);
@@ -349,7 +350,7 @@ int main() {
                 if (gap < gap_closest){
                   index_closest = i;
                   gap_closest = gap;
-                  if ( gap < gap_too_close ){
+                  if ( gap < MIN_GAP_TO_FRONT_OBJECT ){
                     cout<<"Found a car in front, in our lane that is too close!\n";
                     too_close = true;
                     speed_closest = check_speed;
@@ -357,7 +358,10 @@ int main() {
                     // (-) flag it for slow-down
                     // (-) flag it for potential passing
                     if (lane > 0){
-                        lane -= 1; // blindly pass on the left...
+                      lane -= 1; // blindly pass on the left...
+                    }
+                    else if (lane<2) {
+                      lane += 1; // blindly pass on the right...
                     }
                   }
                 }
@@ -368,18 +372,18 @@ int main() {
           // set new reference velocity
           if (too_close){
             if (ref_vel < speed_closest){
-              ref_vel += ideal_dvel;
+              ref_vel += MAX_VEL_CHANGE;
             }
             else if (ref_vel > speed_closest){
-              ref_vel -= ideal_dvel;
+              ref_vel -= MAX_VEL_CHANGE;
             }
           }
           else {
-            if (ref_vel < speed_target){
-              ref_vel += ideal_dvel;
+            if (ref_vel < SPEED_TARGET){
+              ref_vel += MAX_VEL_CHANGE;
             }
-            else if (ref_vel > speed_target){
-              ref_vel -= ideal_dvel;
+            else if (ref_vel > SPEED_TARGET){
+              ref_vel -= MAX_VEL_CHANGE;
             }
           }
 
@@ -426,9 +430,9 @@ int main() {
           }
 
           // In Frenet coordinates, add evenly 30m spaced points ahead of the starting reference
-          vector<double> next_wp0 = getXY(car_s+30,d_lane[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(car_s+60,d_lane[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(car_s+90,d_lane[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp0 = getXY(car_s+30,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(car_s+60,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(car_s+90,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
 
           ptsx.push_back(next_wp0[0]);
           ptsx.push_back(next_wp1[0]);
