@@ -273,13 +273,13 @@ int main() {
         if (event == "telemetry") {
           // j[1] is the data JSON object
 
-        	// car's localization Data
-          double car_x = j[1]["x"];
-          double car_y = j[1]["y"];
-          double car_s = j[1]["s"];
-          double car_d = j[1]["d"];
-          double car_yaw = j[1]["yaw"];
-          double car_speed = mph2mps(j[1]["speed"]);
+        	// car's localization Data, converted to SI units
+          double car_x = j[1]["x"]; // m
+          double car_y = j[1]["y"]; // m
+          double car_s = j[1]["s"]; // m
+          double car_d = j[1]["d"]; // m
+          double car_yaw = deg2rad(j[1]["yaw"]); // rad
+          double car_speed = mph2mps(j[1]["speed"]); // m/s
 
           cout<<"-----------------------------------------------------\n"
               <<"Car's localization data provided by simulator:\n"
@@ -387,13 +387,13 @@ int main() {
           // either we will reference the starting point as where the car is or at the previous paths end point
           double ref_x = car_x;
           double ref_y = car_y;
-          double ref_yaw = deg2rad(car_yaw);
+          double ref_yaw = car_yaw;
 
           // if previous size is almost empty, use the car as starting reference
           if (prev_size < 2) {
             // Use two points that make the path tangent to the car
-            double prev_car_x = car_x - cos(deg2rad(car_yaw));
-            double prev_car_y = car_y - sin(deg2rad(car_yaw));
+            double prev_car_x = car_x - cos(car_yaw);
+            double prev_car_y = car_y - sin(car_yaw);
 
             ptsx.push_back(prev_car_x);
             ptsx.push_back(car_x);
