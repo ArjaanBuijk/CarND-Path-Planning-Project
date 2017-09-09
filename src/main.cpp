@@ -290,12 +290,12 @@ int main() {
               <<"car_yaw  = "<<car_yaw<<'\n'
               <<"car_speed= "<<car_speed<<'\n';
 
-          // Remains of previous path data given to the simulator that has not yet been traversed
+          // Remainder of previous trajectory that car has not yet traversed
           auto previous_path_x = j[1]["previous_path_x"];
           auto previous_path_y = j[1]["previous_path_y"];
           int prev_size = previous_path_x.size();
 
-          // end s and d values of previous path that was given to the simulator
+          // Frenet s and d values at end of previous trajectory
           double end_path_s = j[1]["end_path_s"];
           double end_path_d = j[1]["end_path_d"];
           if (prev_size==0){
@@ -323,6 +323,9 @@ int main() {
           double speed_closest = 0.0;
 
           for (size_t i=0; i<sensor_fusion.size(); ++i){
+            int    object_id  = sensor_fusion[i][0];
+            double object_x   = sensor_fusion[i][1];
+            double object_y   = sensor_fusion[i][2];
             double object_vx  = sensor_fusion[i][3];
             double object_vy  = sensor_fusion[i][4];
             double object_s   = sensor_fusion[i][5];
@@ -467,12 +470,15 @@ int main() {
             y_end_l = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
           }
 
-          // Add more points, driving at new ref_vel, until we have a path of 30m long
+          // Add new points to previous trajectory until we have 50 points total
           cout<<"ref_vel = "<<ref_vel<<'\n';
           cout<<"x_end_l = "<<x_end_l<<'\n';
           // Here we will always output 50 points.
           for (int i=0; i< 50-prev_size; ++i) {
-            x_end_l += 0.02*ref_vel;
+            x_end_l += 0.02*ref_vel; // To drive at new ref_vel we need to space the points
+                                     // along the trajectory with 0.02*ref_vel.
+                                     // Because we work in the car local coordinate system,
+                                     // it is ok to space the x value with this amount.
             y_end_l = s(x_end_l);
 
             cout<<"x_end_l = "<<x_end_l<<'\n';
@@ -484,32 +490,6 @@ int main() {
             next_x_vals.push_back(x_end);
             next_y_vals.push_back(y_end);
           }
-
-
-          /*
-          // Calculate how to break up spline points so that we travel at our desired reference velocity
-          double target_x = 30.0; // going out 30 m to the horizon
-          double target_y = s(target_x);
-          double target_dist = sqrt((target_x)*(target_x) + (target_y)*(target_y));
-          double N = (target_dist/(0.02*ref_vel)); // Number of points we need to put on the spline to travel with target velocity
-          double dx = (target_x)/N; // x-distance between points
-
-
-          // Fill up the rest of our pth planner after filling it with previous points.
-          // Here we will always output 50 points.
-          for (int i=0; i< 50-prev_size; ++i){
-            double x_l = (i+1)*dx;
-            double y_l = s(x_l);
-
-            // Transform it back to global coordinates from the car local coordinates
-            double x_point = ref_x + x_l*cos(ref_yaw) - y_l*sin(ref_yaw);
-            double y_point = ref_y + x_l*sin(ref_yaw) + y_l*cos(ref_yaw);
-
-            next_x_vals.push_back(x_point);
-            next_y_vals.push_back(y_point);
-
-          }
-          */
 
           //******************************************************************************************************
 
