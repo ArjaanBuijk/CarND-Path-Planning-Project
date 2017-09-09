@@ -40,7 +40,6 @@ const double CAR_LENGTH    = inch2m(200.0);
 const double OBJECT_WIDTH  = inch2m(75.0);
 const double OBJECT_LENGTH = inch2m(200.0);
 
-
 // Speedlimit
 const double SPEED_LIMIT = mph2mps(50);
 
@@ -291,17 +290,21 @@ int main() {
               <<"car_yaw  = "<<car_yaw<<'\n'
               <<"car_speed= "<<car_speed<<'\n';
 
-          // Previous path data given to the Planner
+          // Remains of previous path data given to the simulator that has not yet been traversed
           auto previous_path_x = j[1]["previous_path_x"];
           auto previous_path_y = j[1]["previous_path_y"];
-          // Previous path's end s and d values
+          int prev_size = previous_path_x.size();
+
+          // end s and d values of previous path that was given to the simulator
           double end_path_s = j[1]["end_path_s"];
           double end_path_d = j[1]["end_path_d"];
+          if (prev_size==0){
+            end_path_s = car_s;
+            end_path_d = car_d;
+          }
 
-          // Sensor Fusion Data, a list of all other cars on the same side of the road.
+          // Sensor Fusion Data, a list of all objects on the same side of the road.
           auto sensor_fusion = j[1]["sensor_fusion"];
-
-          int prev_size = previous_path_x.size();
 
           json msgJson;
 
@@ -310,24 +313,9 @@ int main() {
 
           // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
-          // test1: Move car forward in straight line at 50 mph
-          /*
-          double dist_inc = 0.5;
-          for(int i = 0; i < 50; i++)
-          {
-            next_x_vals.push_back(car_x+(dist_inc*i)*cos(deg2rad(car_yaw)));
-            next_y_vals.push_back(car_y+(dist_inc*i)*sin(deg2rad(car_yaw)));
-          }
-          */
-
-          // test2: Move car at 50 mph, while staying in lane, and drive smoothly
-          //        and avoids collisions with other cars in front of it
 
           //******************************************************************************************************
-          // Check on other cars in front
-          if (prev_size > 0){
-            car_s = end_path_s;
-          }
+          // Check on objects in front of previous path's end
 
           bool too_close = false;
           int index_closest=-1;
@@ -335,25 +323,27 @@ int main() {
           double speed_closest = 0.0;
 
           for (size_t i=0; i<sensor_fusion.size(); ++i){
-            float d = sensor_fusion[i][6];
+            double object_vx  = sensor_fusion[i][3];
+            double object_vy  = sensor_fusion[i][4];
+            double object_s   = sensor_fusion[i][5];
+            double object_d   = sensor_fusion[i][6];
 
-            if (is_object_in_lane(d,lane)){
-              double vx = sensor_fusion[i][3];
-              double vy = sensor_fusion[i][4];
-              double check_speed = sqrt(vx*vx+vy*vy);
-              double check_car_s = sensor_fusion[i][5];
+            if (is_object_in_lane(object_d,lane)){
+
+              double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+
               // Calculate where the car will be at end time of our previous path
-              check_car_s += ((double)prev_size*0.02*check_speed);
+              object_s += ((double)prev_size*0.02*object_speed);
 
-              if ( check_car_s > car_s) {       // is it in front of us?
-                double gap = check_car_s - car_s;
+              if ( object_s > end_path_s) {       // is it in front of us at end of previous trajectory ?
+                double gap = object_s - end_path_s;
                 if (gap < gap_closest){
                   index_closest = i;
                   gap_closest = gap;
                   if ( gap < MIN_GAP_TO_FRONT_OBJECT ){
                     cout<<"Found a car in front, in our lane that is too close!\n";
                     too_close = true;
-                    speed_closest = check_speed;
+                    speed_closest = object_speed;
                     // TO DO: add further logic, like:
                     // (-) flag it for slow-down
                     // (-) flag it for potential passing
@@ -430,9 +420,9 @@ int main() {
           }
 
           // In Frenet coordinates, add evenly 30m spaced points ahead of the starting reference
-          vector<double> next_wp0 = getXY(car_s+30,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(car_s+60,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(car_s+90,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp0 = getXY(end_path_s+30,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(end_path_s+60,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(end_path_s+90,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
 
           ptsx.push_back(next_wp0[0]);
           ptsx.push_back(next_wp1[0]);
