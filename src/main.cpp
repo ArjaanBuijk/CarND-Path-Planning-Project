@@ -24,6 +24,33 @@ double rad2deg(double x) { return x * 180 / pi(); }
 double mph2mps(double x) { return x * 0.44704; }
 double mps2mph(double x) { return x / 0.44704; }
 
+// For converting back and forth between inch and m
+double inch2m(double x) { return x * 0.0254; }
+double m2inch(double x) { return x / 0.0254; }
+
+// Highway has 6 lanes- 3 heading in each direction.
+// Each lane is 4 m wide.
+const double lane_width = 4.0;
+const vector<double> d_lane = {0.5*lane_width, 1.5*lane_width, 2.5*lane_width}; // d of left, middle, right lane center line
+
+// Typical car width & length in USA
+// See: https://www.reference.com/vehicles/width-length-average-car-9eb7b00283fb1bd8
+const double car_width  = inch2m(75.0);
+const double car_length = inch2m(200.0);
+
+// Speedlimit
+const double speed_limit = mph2mps(50);
+
+// Target velocity a little bit below the speedlimit
+const double speed_target = mph2mps(49.5);
+
+// Flag danger when the gap with car in front is too close
+const double gap_too_close = 30.0;
+
+// Change in ref_vel per cycle to use when it can accellerate or when it needs to slow down
+// This value is chosen to stay within allowed longitudinal jerk
+const double ideal_dvel = 0.224;
+
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
@@ -167,6 +194,20 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
+
+// Helper function to check if a car is in a certain lane
+bool car_in_lane(double d,int lane){
+
+  if ( d+0.5*car_width > d_lane[lane]-0.5*lane_width &&
+       d-0.5*car_width < d_lane[lane]+0.5*lane_width ){
+    return true;
+  }
+  else{
+    return false;
+  }
+
+}
+
 int main() {
   uWS::Hub h;
 
@@ -182,10 +223,6 @@ int main() {
   // The max s value before wrapping around the track back to 0
   const double max_s = 6945.554; // This is length of the track in meters.
 
-  // Highway has 6 lanes- 3 heading in each direction.
-  // Each lane is 4 m wide.
-  const double lane_width = 4.0;
-  const vector<double> d_lane = {0.5*lane_width, 1.5*lane_width, 2.5*lane_width}; // d of left, middle, right lane center line
 
   // The d vector is pointing in the direction of the right-hand side of the road.
 
@@ -214,10 +251,10 @@ int main() {
   // start in lane 1
   int lane = 1;
 
-  // target velocity, a little below the speedlimit of 50 mph
-  double ref_vel = mph2mps(49.5); // we work in SI units (meter-per-second)
+  // start at 0.0 velocity, and let logic apply acceleration to target velocity
+  double ref_vel = 0.0;
 
-  h.onMessage([&lane,&lane_width,&d_lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -242,7 +279,7 @@ int main() {
           double car_s = j[1]["s"];
           double car_d = j[1]["d"];
           double car_yaw = j[1]["yaw"];
-          double car_speed = j[1]["speed"];
+          double car_speed = mph2mps(j[1]["speed"]);
 
           cout<<"-----------------------------------------------------\n"
               <<"Car's localization data provided by simulator:\n"
@@ -283,7 +320,70 @@ int main() {
           */
 
           // test2: Move car at 50 mph, while staying in lane, and drive smoothly
+          //        and avoids collisions with other cars in front of it
 
+          //******************************************************************************************************
+          // Check on other cars in front
+          if (prev_size > 0){
+            car_s = end_path_s;
+          }
+
+          bool too_close = false;
+          int index_closest=-1;
+          double gap_closest = 1000.0; // we look for the closest car that is in our lane, in front of us
+          double speed_closest = 0.0;
+
+          for (size_t i=0; i<sensor_fusion.size(); ++i){
+            float d = sensor_fusion[i][6];
+
+            if (car_in_lane(d,lane)){
+              double vx = sensor_fusion[i][3];
+              double vy = sensor_fusion[i][4];
+              double check_speed = sqrt(vx*vx+vy*vy);
+              double check_car_s = sensor_fusion[i][5];
+              // Calculate where the car will be at end time of our previous path
+              check_car_s += ((double)prev_size*0.02*check_speed);
+
+              if ( check_car_s > car_s) {       // is it in front of us?
+                double gap = check_car_s - car_s;
+                if (gap < gap_closest){
+                  index_closest = i;
+                  gap_closest = gap;
+                  if ( gap < gap_too_close ){
+                    cout<<"Found a car in front, in our lane that is too close!\n";
+                    too_close = true;
+                    speed_closest = check_speed;
+                    // TO DO: add further logic, like:
+                    // (-) flag it for slow-down
+                    // (-) flag it for potential passing
+                    if (lane > 0){
+                        lane -= 1; // blindly pass on the left...
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // set new reference velocity
+          if (too_close){
+            if (ref_vel < speed_closest){
+              ref_vel += ideal_dvel;
+            }
+            else if (ref_vel > speed_closest){
+              ref_vel -= ideal_dvel;
+            }
+          }
+          else {
+            if (ref_vel < speed_target){
+              ref_vel += ideal_dvel;
+            }
+            else if (ref_vel > speed_target){
+              ref_vel -= ideal_dvel;
+            }
+          }
+
+          //******************************************************************************************************
           // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m
           // later we will interpolate these waypoints with a spline and fill it in with more points
           vector<double> ptsx;
@@ -353,19 +453,53 @@ int main() {
           // Set (x,y) points to the spline
           s.set_points(ptsx, ptsy);
 
-          // Start with all of the remaining previous path points from last time.
+          double x_end_l = 0.0;
+          double y_end_l = 0.0;
+
+
+          // Start with all of the remaining previous path points from last time, if we have any
           // Do not re-create them each time. This helps with the transitions.
-          for (int i=0; i<prev_size; ++i){
-            next_x_vals.push_back(previous_path_x[i]);
-            next_y_vals.push_back(previous_path_y[i]);
+          if (prev_size > 0){
+            for (int i=0; i<prev_size; ++i){
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+            double x_end = previous_path_x[prev_size-1];
+            double y_end = previous_path_y[prev_size-1];
+            // Transform last point into local car coordinate system
+            double dx = x_end - ref_x;
+            double dy = y_end - ref_y;
+            x_end_l =  dx*cos(ref_yaw) + dy*sin(ref_yaw);
+            y_end_l = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
           }
 
+          // Add more points, driving at new ref_vel, until we have a path of 30m long
+          cout<<"ref_vel = "<<ref_vel<<'\n';
+          cout<<"x_end_l = "<<x_end_l<<'\n';
+          // Here we will always output 50 points.
+          for (int i=0; i< 50-prev_size; ++i) {
+            x_end_l += 0.02*ref_vel;
+            y_end_l = s(x_end_l);
+
+            cout<<"x_end_l = "<<x_end_l<<'\n';
+
+            // Transform it back to global coordinates from the car local coordinates
+            double x_end = ref_x + x_end_l*cos(ref_yaw) - y_end_l*sin(ref_yaw);
+            double y_end = ref_y + x_end_l*sin(ref_yaw) + y_end_l*cos(ref_yaw);
+
+            next_x_vals.push_back(x_end);
+            next_y_vals.push_back(y_end);
+          }
+
+
+          /*
           // Calculate how to break up spline points so that we travel at our desired reference velocity
           double target_x = 30.0; // going out 30 m to the horizon
           double target_y = s(target_x);
           double target_dist = sqrt((target_x)*(target_x) + (target_y)*(target_y));
           double N = (target_dist/(0.02*ref_vel)); // Number of points we need to put on the spline to travel with target velocity
           double dx = (target_x)/N; // x-distance between points
+
 
           // Fill up the rest of our pth planner after filling it with previous points.
           // Here we will always output 50 points.
@@ -381,6 +515,9 @@ int main() {
             next_y_vals.push_back(y_point);
 
           }
+          */
+
+          //******************************************************************************************************
 
 
           // END OF TODO
