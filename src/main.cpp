@@ -483,7 +483,7 @@ double trajectory___ref_vel(vector<vector<double>> predictions,
   // Avoid collision with closest object in front of car,
   // at predicted locations at end of previous path
   // Determine if we are far enough that we can just follow it with the object's speed,
-  // or if we are that close that we need to break to increase the distance.
+  // or if we are that close that we need to brake to increase the distance.
 
   bool close_break  = false;
   bool close_follow = false;
