@@ -67,12 +67,17 @@ const double TRAJ_DURATION = TRAJ_DT*TRAJ_NPOINTS; // duration of trajectory
 enum State {KL, LCL, LCR};
 
 // Weights for the cost functions
-int WEIGHT_SAFETY_COLLISSION_COST = 100000000;
-int WEIGHT_EFFICIENCY_SPEED_COST  = 1;
+int WEIGHT_SAFETY_COLLISSION_COST     = 100000000;
+int WEIGHT_EFFICIENCY_OPENSPACE_COST  = 2;
+int WEIGHT_EFFICIENCY_SPEED_COST      = 1;
+
 
 // Regions behind and ahead for collision cost calculation
 const double COLLISSION_COST_REGION_BEHIND = 10; //m
 const double COLLISSION_COST_REGION_AHEAD  = 10; //m
+
+// Region beyond which openspace cost is zero
+const double OPEN_SPACE_MAX = 50; //m
 
 // Regions behind and ahead for speed cost calculation
 const double SPEED_COST_REGION_BEHIND =  5; //m
@@ -324,6 +329,30 @@ int safety_collission_danger_cost(int lane, int state, int next_state,
   return cost;
 }
 
+// Open space cost:
+// We penalize lanes that have the least open space in front of the car
+int open_space_cost(int lane, int state, int next_state,
+               vector<double> lane_openspace_now, vector<double> lane_openspace_end){
+
+  int next_lane = lane;
+  if (next_state == LCL) {
+    next_lane -= 1;
+  }
+  if (next_state == LCR) {
+    next_lane += 1;
+  }
+
+  int cost = 0.0;
+  if (lane_openspace_now[next_lane] < OPEN_SPACE_MAX) {
+    cost += WEIGHT_EFFICIENCY_OPENSPACE_COST*(OPEN_SPACE_MAX - lane_openspace_now[next_lane])/OPEN_SPACE_MAX;
+  }
+  if (lane_openspace_end[next_lane] < OPEN_SPACE_MAX) {
+    cost += WEIGHT_EFFICIENCY_OPENSPACE_COST*(OPEN_SPACE_MAX - lane_openspace_end[next_lane])/OPEN_SPACE_MAX;
+  }
+
+  return cost;
+}
+
 // Efficiency Speed cost:
 // We penalize lanes that drive slower than the speedlimit
 int efficiency_speed_cost(int lane, int state, int next_state,
@@ -339,10 +368,10 @@ int efficiency_speed_cost(int lane, int state, int next_state,
 
   int cost = 0.0;
   if (lane_speeds_now[next_lane] < SPEED_LIMIT) {
-    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_now[next_lane]);
+    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_now[next_lane])/SPEED_LIMIT;
   }
   if (lane_speeds_end[next_lane] < SPEED_LIMIT) {
-    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_end[next_lane]);
+    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_end[next_lane])/SPEED_LIMIT;
   }
   return cost;
 }
@@ -352,6 +381,7 @@ int calculate_cost(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
                    vector<double> previous_path_x, vector<double> previous_path_y,
                    vector<vector<double>> sensor_fusion, vector<vector<double>> predictions,
+                   vector<double> lane_openspace_now, vector<double> lane_openspace_end,
                    vector<double> lane_speeds_now, vector<double> lane_speeds_end){
   int cost = 0;
 
@@ -361,8 +391,12 @@ int calculate_cost(int lane, int state, int next_state,
                                       sensor_fusion, predictions,
                                       lane_speeds_now, lane_speeds_end);
 
+  cost+= open_space_cost( lane,  state,  next_state,
+                     lane_openspace_now, lane_openspace_end);
+
   cost+= efficiency_speed_cost( lane,  state,  next_state,
                      lane_speeds_now, lane_speeds_end);
+
   return cost;
 }
 
@@ -382,7 +416,7 @@ int main() {
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
-  //const double max_s = 6945.554; // This is length of the track in meters.
+  const double max_s = 6945.554; // This is length of the track in meters.
 
 
   // The d vector is pointing in the direction of the right-hand side of the road.
@@ -418,7 +452,7 @@ int main() {
   // start in state KL
   int state = KL;
 
-  h.onMessage([&lane,&ref_vel,&state,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&lane,&ref_vel,&state,&max_s,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -511,9 +545,12 @@ int main() {
           vector<int> next_states;
           next_states = possible_successor_states(lane, state);
 
-          // for all the lanes, calculate the miniumum speed of objects in a region around the car
+          // for all the lanes:
+          // - calculate the miniumum speed of objects in a region around the car
+          // - calculate the open space in front of the car
           // right now, and at end of previous trajectory.
-          vector<double> lane_speeds_now = {1000.0, 1000.0, 1000.0};
+          vector<double> lane_openspace_now = {max_s, max_s, max_s};
+          vector<double> lane_speeds_now    = {1000.0, 1000.0, 1000.0};
           for (size_t i=0; i<sensor_fusion.size(); ++i){
             double object_vx  = sensor_fusion[i][3];
             double object_vy  = sensor_fusion[i][4];
@@ -521,6 +558,11 @@ int main() {
             double object_d   = sensor_fusion[i][6];
             double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
             int object_lane = lane_of_object(object_d);
+
+            if (object_s > car_s){
+              lane_openspace_now[object_lane] = min(lane_openspace_now[object_lane], object_s - car_s );
+            }
+
             if (object_s > car_s - SPEED_COST_REGION_BEHIND &&
                 object_s < car_s + SPEED_COST_REGION_AHEAD) {
 
@@ -528,18 +570,23 @@ int main() {
             }
           }
 
-          vector<double> lane_speeds_end = {1000.0, 1000.0, 1000.0};
+          vector<double> lane_openspace_end = {max_s, max_s, max_s};
+          vector<double> lane_speeds_end    = {1000.0, 1000.0, 1000.0};
           for (vector<double> prediction : predictions){
             double object_s     = prediction[2];
             double object_d     = prediction[3];
             double object_speed = prediction[4];
             int object_lane = lane_of_object(object_d);
+
+            if (object_s > end_path_s){
+              lane_openspace_end[object_lane] = min(lane_openspace_end[object_lane], object_s - end_path_s );
+            }
+
             if (object_s > end_path_s - SPEED_COST_REGION_BEHIND &&
                 object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
               lane_speeds_end[object_lane] = min(lane_speeds_end[object_lane], object_speed);
             }
           }
-
 
           // calculate the costs for each possible successor state
           vector<int> costs;
@@ -548,6 +595,7 @@ int main() {
                                       car_x, car_y, car_s, end_path_s,
                                       previous_path_x, previous_path_y,
                                       sensor_fusion, predictions,
+                                      lane_openspace_now, lane_openspace_end,
                                       lane_speeds_now, lane_speeds_end);
             costs.push_back(cost);
           }
