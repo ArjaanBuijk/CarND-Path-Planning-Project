@@ -71,8 +71,9 @@ const double TRAJ_DURATION = TRAJ_DT*TRAJ_NPOINTS; // duration of trajectory
 enum State {KL, LCL, LCR};
 
 // Weights for the cost functions
-double WEIGHT_SAFETY_COLLISSION_COST     = 1.E10;
-double WEIGHT_EFFICIENCY_SPEED_COST      = 1.0;
+const double WEIGHT_SAFETY_COLLISSION_COST     = 1.E10;
+const double WEIGHT_EFFICIENCY_SPEED_COST      = 1.0;
+const double WEIGHT_TARGET_LANE_COST           = 1.E-6;
 
 // Regions behind and ahead for collision cost calculation
 const double COLLISSION_COST_REGION_BEHIND = 10; //m
@@ -81,6 +82,10 @@ const double COLLISSION_COST_REGION_AHEAD  = 5; //m beyond end of previous path
 // Regions behind and ahead for speed cost calculation
 const double SPEED_COST_REGION_BEHIND =  0; //m
 const double SPEED_COST_REGION_AHEAD  = 50; //m
+
+// We like to drive in the middle lane, if all else is equal
+const int TARGET_LANE = 1;
+
 
 
 // Checks if the SocketIO event has JSON data.
@@ -340,6 +345,27 @@ double efficiency_speed_cost(int lane, int state, int next_state,
   return cost;
 }
 
+// Target lane cost:
+// We penalize lanes that are not the preferred target lane
+double cost_target_lane(int lane, int state, int next_state ){
+
+  int next_lane = lane;
+  if (next_state == LCL) {
+    next_lane -= 1;
+  }
+  if (next_state == LCR) {
+    next_lane += 1;
+  }
+
+  double cost = 0.0;
+  cost += WEIGHT_TARGET_LANE_COST*(TARGET_LANE-next_lane)*(TARGET_LANE-next_lane);
+
+  if (VERBOSE){
+    cout<<"lane, next lane, target cost    = "<<lane<<", "<<next_lane<<", "<<cost<<'\n';
+  }
+  return cost;
+}
+
 // Calculate total cost to transition to next_state
 double calculate_cost(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
@@ -356,6 +382,9 @@ double calculate_cost(int lane, int state, int next_state,
 
   cost+= efficiency_speed_cost( lane,  state,  next_state,
                      lane_speeds);
+
+
+  cost+= cost_target_lane( lane,  state,  next_state );
 
   return cost;
 }
@@ -581,6 +610,7 @@ int main() {
           // select successor state with lowest cost
           int index_best = min_element(costs.begin(), costs.end()) - costs.begin();
           int next_state = next_states[index_best];
+
 
 
           // BEHAVIOR - End
