@@ -61,7 +61,7 @@ const double MAX_VEL_CHANGE = 0.2;
 
 // Characteristics of the trajectory that we give back to the simulator
 const double TRAJ_DT       = 0.02; // time between two points of trajectory
-const int    TRAJ_NPOINTS  = 75;   // number of points in trajectory
+const int    TRAJ_NPOINTS  = 50;   // number of points in trajectory
 const double TRAJ_DURATION = TRAJ_DT*TRAJ_NPOINTS; // duration of trajectory
 
 // In our Finite State Machine, we consider 3 states:
@@ -76,10 +76,11 @@ double WEIGHT_EFFICIENCY_SPEED_COST      = 1.0;
 
 // Regions behind and ahead for collision cost calculation
 const double COLLISSION_COST_REGION_BEHIND = 10; //m
+const double COLLISSION_COST_REGION_AHEAD  = 5; //m beyond end of previous path
 
 // Regions behind and ahead for speed cost calculation
-const double SPEED_COST_REGION_BEHIND =  5; //m
-const double SPEED_COST_REGION_AHEAD  = 50; //m
+const double SPEED_COST_REGION_BEHIND =  0; //m
+const double SPEED_COST_REGION_AHEAD  = 10; //m   beyond end of previous path
 
 
 // Checks if the SocketIO event has JSON data.
@@ -276,7 +277,7 @@ double safety_collission_danger_cost(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
                    vector<double> previous_path_x, vector<double> previous_path_y,
                    vector<vector<double>> sensor_fusion, vector<vector<double>> predictions,
-                   vector<double> lane_speeds_now, vector<double> lane_speeds_end){
+                   vector<double> lane_speeds){
 
   double cost = 0.0;
 
@@ -297,7 +298,7 @@ double safety_collission_danger_cost(int lane, int state, int next_state,
 
       if (is_object_in_lane(object_d,next_lane)){
         if ( object_s > car_s-COLLISSION_COST_REGION_BEHIND &&
-             object_s < end_path_s) {
+             object_s < end_path_s+COLLISSION_COST_REGION_AHEAD) {
           too_close = true;
           break;
         }
@@ -316,7 +317,7 @@ double safety_collission_danger_cost(int lane, int state, int next_state,
 // Efficiency Speed cost:
 // We penalize lanes that drive slower than the speedlimit
 double efficiency_speed_cost(int lane, int state, int next_state,
-               vector<double> lane_speeds_now, vector<double> lane_speeds_end){
+               vector<double> lane_speeds){
 
   int next_lane = lane;
   if (next_state == LCL) {
@@ -327,12 +328,10 @@ double efficiency_speed_cost(int lane, int state, int next_state,
   }
 
   double cost = 0.0;
-  if (lane_speeds_now[next_lane] < SPEED_LIMIT) {
-    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_now[next_lane])/SPEED_LIMIT;
+  if (lane_speeds[next_lane] <= SPEED_LIMIT) {
+    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds[next_lane])/SPEED_LIMIT;
   }
-  if (lane_speeds_end[next_lane] < SPEED_LIMIT) {
-    cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds_end[next_lane])/SPEED_LIMIT;
-  }
+
   if (VERBOSE)
     cout<<"lane, next lane, speed cost     = "<<lane<<", "<<next_lane<<", "<<cost<<'\n';
   return cost;
@@ -343,18 +342,17 @@ double calculate_cost(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
                    vector<double> previous_path_x, vector<double> previous_path_y,
                    vector<vector<double>> sensor_fusion, vector<vector<double>> predictions,
-                   vector<double> lane_openspace_now, vector<double> lane_openspace_end,
-                   vector<double> lane_speeds_now, vector<double> lane_speeds_end){
+                   vector<double> lane_speeds){
   double cost = 0.0;
 
   cost+= safety_collission_danger_cost( lane, state, next_state,
                                       car_x, car_y, car_s, end_path_s,
                                       previous_path_x, previous_path_y,
                                       sensor_fusion, predictions,
-                                      lane_speeds_now, lane_speeds_end);
+                                      lane_speeds);
 
   cost+= efficiency_speed_cost( lane,  state,  next_state,
-                     lane_speeds_now, lane_speeds_end);
+                     lane_speeds);
 
   return cost;
 }
@@ -441,7 +439,7 @@ int main() {
           //double car_speed = mph2mps(j[1]["speed"]); // m/s
 
           // calculate the lane the car is in
-          lane = lane_of_object(car_d);
+          // lane = lane_of_object(car_d);
 
           // Remainder of previous trajectory that car has not yet traversed
           auto previous_path_x = j[1]["previous_path_x"];
@@ -513,8 +511,7 @@ int main() {
           // - calculate the miniumum speed of objects in a region around the car
           // - calculate the open space in front of the car
           // right now, and at end of previous trajectory.
-          vector<double> lane_openspace_now = {max_s, max_s, max_s};
-          vector<double> lane_speeds_now    = {1000.0, 1000.0, 1000.0};
+          vector<double> lane_speeds    = {1000.0, 1000.0, 1000.0};
           for (size_t i=0; i<sensor_fusion.size(); ++i){
             double object_vx  = sensor_fusion[i][3];
             double object_vy  = sensor_fusion[i][4];
@@ -523,18 +520,14 @@ int main() {
             double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
             int object_lane = lane_of_object(object_d);
 
-            if (object_s > car_s){
-              lane_openspace_now[object_lane] = min(lane_openspace_now[object_lane], object_s - car_s );
-            }
+            if (object_s > car_s      - SPEED_COST_REGION_BEHIND &&
+                object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
 
-            if (object_s > car_s - SPEED_COST_REGION_BEHIND &&
-                object_s < car_s + SPEED_COST_REGION_AHEAD) {
-
-              lane_speeds_now[object_lane] = min(lane_speeds_now[object_lane], object_speed);
+              lane_speeds[object_lane] = min(lane_speeds[object_lane], object_speed);
             }
           }
 
-          vector<double> lane_openspace_end = {max_s, max_s, max_s};
+          /*
           vector<double> lane_speeds_end    = {1000.0, 1000.0, 1000.0};
           for (vector<double> prediction : predictions){
             double object_s     = prediction[2];
@@ -551,6 +544,7 @@ int main() {
               lane_speeds_end[object_lane] = min(lane_speeds_end[object_lane], object_speed);
             }
           }
+          */
 
           // calculate the costs for each possible successor state
           vector<double> costs;
@@ -559,8 +553,7 @@ int main() {
                                       car_x, car_y, car_s, end_path_s,
                                       previous_path_x, previous_path_y,
                                       sensor_fusion, predictions,
-                                      lane_openspace_now, lane_openspace_end,
-                                      lane_speeds_now, lane_speeds_end);
+                                      lane_speeds);
             costs.push_back(cost);
           }
 
