@@ -69,7 +69,7 @@ enum State {KL, LCL, LCR};
 int WEIGHT_SPEED_COST = 1;
 
 // Regions behind and ahead for speed cost calculation
-const double SPEED_COST_REGION_BEHIND = 30; //m
+const double SPEED_COST_REGION_BEHIND =  5; //m
 const double SPEED_COST_REGION_AHEAD  = 30; //m
 
 
@@ -263,7 +263,8 @@ vector<int> possible_successor_states(int lane, int state) {
 
 // Speed cost:
 // We penalize lanes that drive slower than the speedlimit
-int speed_cost(int lane, int state, int next_state, vector<double> lane_speeds){
+int speed_cost(int lane, int state, int next_state,
+               vector<double> lane_speeds_now, vector<double> lane_speeds_end){
 
   int next_lane = lane;
   if (next_state == LCL) {
@@ -274,8 +275,11 @@ int speed_cost(int lane, int state, int next_state, vector<double> lane_speeds){
   }
 
   int cost = 0.0;
-  if (lane_speeds[next_lane] < SPEED_LIMIT) {
-    cost = WEIGHT_SPEED_COST*(SPEED_LIMIT - lane_speeds[next_lane]);
+  if (lane_speeds_now[next_lane] < SPEED_LIMIT) {
+    cost += WEIGHT_SPEED_COST*(SPEED_LIMIT - lane_speeds_now[next_lane]);
+  }
+  if (lane_speeds_end[next_lane] < SPEED_LIMIT) {
+    cost += WEIGHT_SPEED_COST*(SPEED_LIMIT - lane_speeds_end[next_lane]);
   }
   return cost;
 }
@@ -285,9 +289,10 @@ int calculate_cost(int lane, int state, int next_state,
                    double car_x, double car_y,
                    vector<double> previous_path_x, vector<double> previous_path_y,
                    vector<vector<double>> predictions,
-                   vector<double> lane_speeds){
+                   vector<double> lane_speeds_now, vector<double> lane_speeds_end){
   int cost = 0;
-  cost+= speed_cost( lane,  state,  next_state, lane_speeds);
+  cost+= speed_cost( lane,  state,  next_state,
+                     lane_speeds_now, lane_speeds_end);
   return cost;
 }
 
@@ -452,15 +457,31 @@ int main() {
           cout<<'\n';
 
           // for all the lanes, calculate the miniumum speed of objects in a region around the car
-          vector<double> lane_speeds = {1000.0, 1000.0, 1000.0};
+          // right now, and at end of previous trajectory.
+          vector<double> lane_speeds_now = {1000.0, 1000.0, 1000.0};
+          for (size_t i=0; i<sensor_fusion.size(); ++i){
+            double object_vx  = sensor_fusion[i][3];
+            double object_vy  = sensor_fusion[i][4];
+            double object_s   = sensor_fusion[i][5];
+            double object_d   = sensor_fusion[i][6];
+            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+            int object_lane = lane_of_object(object_d);
+            if (object_s > car_s - SPEED_COST_REGION_BEHIND &&
+                object_s < car_s + SPEED_COST_REGION_AHEAD) {
+
+              lane_speeds_now[object_lane] = min(lane_speeds_now[object_lane], object_speed);
+            }
+          }
+
+          vector<double> lane_speeds_end = {1000.0, 1000.0, 1000.0};
           for (vector<double> prediction : predictions){
             double object_s     = prediction[2];
             double object_d     = prediction[3];
             double object_speed = prediction[4];
-            if (object_s > car_s - SPEED_COST_REGION_BEHIND &&
-                object_s < car_s + SPEED_COST_REGION_AHEAD) {
-              int object_lane = lane_of_object(object_d);
-              lane_speeds[object_lane] = min(lane_speeds[object_lane], object_speed);
+            int object_lane = lane_of_object(object_d);
+            if (object_s > end_path_s - SPEED_COST_REGION_BEHIND &&
+                object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
+              lane_speeds_end[object_lane] = min(lane_speeds_end[object_lane], object_speed);
             }
           }
 
@@ -471,7 +492,7 @@ int main() {
             int cost = calculate_cost(lane, state, next_state,
                                       car_x, car_y, previous_path_x, previous_path_y,
                                       predictions,
-                                      lane_speeds);
+                                      lane_speeds_now, lane_speeds_end);
             costs.push_back(cost);
           }
 
