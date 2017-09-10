@@ -15,6 +15,9 @@ using namespace std;
 // for convenience
 using json = nlohmann::json;
 
+// Set this to true, to get debug information
+const bool VERBOSE = false;
+
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
@@ -27,9 +30,6 @@ double mps2mph(double x) { return x / 0.44704; }
 // For converting back and forth between inch and m
 double inch2m(double x) { return x * 0.0254; }
 double m2inch(double x) { return x / 0.0254; }
-
-// Provide print-out on costs
-const bool VERBOSE = true;
 
 // Highway has 6 lanes- 3 heading in each direction.
 // Each lane is 4 m wide.
@@ -255,36 +255,100 @@ int lane_of_object(double d){
   return LANES_AVAILABLE; // when we get here, it appears object is off the road...
 }
 
-// Possible successor states for car
-vector<int> possible_successor_states(int lane, int state, int lane_change_count_down) {
-  vector<int> next_states;
-  if (lane_change_count_down>0){
-    next_states.push_back(KL);           // first finish a lane change maneuver
+// Predict object location at time dT
+vector<vector<double>> predict___objects_at_end_of_previous_trajectory(vector<vector<double>>sensor_fusion,
+                                                                     double dT) {
+  // simple prediction of objects state at end of previous trajectory
+  // -> assume they move with constant velocity, without acceleration and without change in s
+  // -> we could put some probability logic in here, but is not needed to get good results
+  vector<vector<double>> predictions;
+  for (size_t i=0; i<sensor_fusion.size(); ++i){
+    //int    object_id  = sensor_fusion[i][0];
+    double object_x   = sensor_fusion[i][1];
+    double object_y   = sensor_fusion[i][2];
+    double object_vx  = sensor_fusion[i][3];
+    double object_vy  = sensor_fusion[i][4];
+    double object_s   = sensor_fusion[i][5];
+    double object_d   = sensor_fusion[i][6];
+
+    double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+
+    object_x += object_vx*dT;
+    object_y += object_vy*dT;
+    object_s += object_speed*dT;
+
+    vector<double> prediction;
+    prediction.push_back(object_x );
+    prediction.push_back(object_y );
+    prediction.push_back(object_s );
+    prediction.push_back(object_d );
+    prediction.push_back(object_speed );
+
+    predictions.push_back(prediction);
   }
+  return predictions;
+}
+
+
+// determine possible successor states from current state
+vector<int> behavior___possible_successor_states(int lane, int state, bool stay_in_lane) {
+  vector<int> next_states;
+  if (stay_in_lane)
+    next_states.push_back(KL);
   else {
     next_states.push_back(state);         // each state supports self transition
     if (state==KL){
-      if (lane==0){
+      if (lane==0)
         next_states.push_back(LCR);
-      }
-      else if (lane==LANES_AVAILABLE - 1){
+      else if (lane==LANES_AVAILABLE - 1)
         next_states.push_back(LCL);
-      }
       else{
         next_states.push_back(LCL);
         next_states.push_back(LCR);
       }
     }
-    else {
+    else
       next_states.push_back(KL);
-    }
   }
   return next_states;
 }
 
+// determine maximum speed the car can drive in each lane
+vector<double> behavior___max_lane_speeds(vector<vector<double>> predictions,
+                               double car_s, double end_path_s){
+
+  vector<double> lane_speeds    = {1000.0, 1000.0, 1000.0};
+  vector<double> gap_closests   = {1000.0, 1000.0, 1000.0};
+  // for all the lanes:
+  // - for objects that are in front of car now
+  //    - find the one that is closest to car at predicted location at end of previous trajectory
+  //    - store it's speed as the lane_speed --> in that lane, the car cannot go faster than this object
+  for (vector<double> prediction : predictions) {
+    double object_s       = prediction[2];
+    double object_d       = prediction[3];
+    double object_speed   = prediction[4];
+
+    int object_lane = lane_of_object(object_d);
+
+    if (object_s > car_s &&
+        object_s < car_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us now and not too far away
+
+      if ( object_s > end_path_s &&
+           object_s < end_path_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us at end and not too far away
+        double gap = object_s - end_path_s;
+        if (gap < gap_closests[object_lane]){
+          gap_closests[object_lane] = gap;
+          lane_speeds[object_lane] = object_speed;
+        }
+      }
+    }
+  }
+  return lane_speeds;
+}
+
 // Safety collission danger cost:
 // We penalize lane changes have collission danger
-double safety_collission_danger_cost(int lane, int state, int next_state,
+double behavior___cost_collission_danger(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
                    vector<double> previous_path_x, vector<double> previous_path_y,
                    vector<vector<double>> sensor_fusion, vector<vector<double>> predictions,
@@ -327,7 +391,7 @@ double safety_collission_danger_cost(int lane, int state, int next_state,
 
 // Efficiency Speed cost:
 // We penalize lanes that drive slower than the speedlimit
-double efficiency_speed_cost(int lane, int state, int next_state,
+double behavior___cost_speed(int lane, int state, int next_state,
                vector<double> lane_speeds){
 
   int next_lane = lane;
@@ -353,7 +417,7 @@ double efficiency_speed_cost(int lane, int state, int next_state,
 
 // Target lane cost:
 // We penalize lanes that are not the preferred target lane
-double cost_target_lane(int lane, int state, int next_state ){
+double behavior___cost_target_lane(int lane, int state, int next_state ){
 
   int next_lane = lane;
   if (next_state == LCL) {
@@ -373,29 +437,215 @@ double cost_target_lane(int lane, int state, int next_state ){
 }
 
 // Calculate total cost to transition to next_state
-double calculate_cost(int lane, int state, int next_state,
+double behavior___cost(int lane, int state, int next_state,
                    double car_x, double car_y, double car_s, double end_path_s,
                    vector<double> previous_path_x, vector<double> previous_path_y,
-                   vector<vector<double>> sensor_fusion, vector<vector<double>> predictions,
-                   vector<double> lane_speeds){
-  double cost = 0.0;
+                   vector<vector<double>> sensor_fusion, vector<vector<double>> predictions){
 
-  cost+= safety_collission_danger_cost( lane, state, next_state,
+  // determine maximum speed the car can drive in each lane
+  vector<double> lane_speeds;
+  lane_speeds = behavior___max_lane_speeds(predictions, car_s, end_path_s);
+
+  double cost = 0.0;
+  cost+= behavior___cost_collission_danger( lane, state, next_state,
                                       car_x, car_y, car_s, end_path_s,
                                       previous_path_x, previous_path_y,
                                       sensor_fusion, predictions,
                                       lane_speeds);
 
-  cost+= efficiency_speed_cost( lane,  state,  next_state,
+  cost+= behavior___cost_speed( lane,  state,  next_state,
                      lane_speeds);
 
 
-  cost+= cost_target_lane( lane,  state,  next_state );
+  cost+= behavior___cost_target_lane( lane,  state,  next_state );
 
   return cost;
 }
 
+// Determine next lane car will drive in
+int trajectory___next_lane(int next_state, int lane){
+  int next_lane = lane;
+  if (next_state == LCL || next_state == LCR ){
+    if (next_state == LCL){
+      next_lane -= 1;
+    }
+    else if (next_state == LCR) {
+      next_lane += 1;
+    }
+  }
+  return next_lane;
+}
 
+// determine the new safe reference velocity that car can drive at
+double trajectory___ref_vel(vector<vector<double>> predictions,
+                            double end_path_s, int next_lane, double ref_vel){
+
+  // Avoid collision with closest object in front of car,
+  // at predicted locations at end of previous path
+  // Determine if we are far enough that we can just follow it with the object's speed,
+  // or if we are that close that we need to break to increase the distance.
+
+  bool close_break  = false;
+  bool close_follow = false;
+  double gap_closest = 1000.0;
+  double speed_closest = 0.0;
+
+  for (vector<double> prediction : predictions) {
+    double object_s       = prediction[2];
+    double object_d       = prediction[3];
+    double object_speed   = prediction[4];
+
+    if (is_object_in_lane(object_d,next_lane)){
+      if ( object_s > end_path_s) {
+        double gap = object_s - end_path_s;
+        if (gap < gap_closest){
+          gap_closest = gap;
+          if ( gap < GAP_TO_OBJECT_AHEAD_FOLLOW ){
+            close_follow  = true;
+            speed_closest = object_speed;
+            if ( gap < GAP_TO_OBJECT_AHEAD_BREAK ){
+              close_break = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // set new reference velocity
+  if (close_break) {                      // really close to next car --> Break!
+    ref_vel -= MAX_VEL_CHANGE;
+  }
+  else if (close_follow){                 // close, but not too close to next car --> Follow!
+    if (ref_vel < speed_closest){
+      ref_vel += MAX_VEL_CHANGE;
+    }
+    else if (ref_vel > speed_closest){
+      ref_vel -= MAX_VEL_CHANGE;
+    }
+  }
+  else {                                  // all clear --> Go the target speed!
+    if (ref_vel < SPEED_TARGET){
+      ref_vel += MAX_VEL_CHANGE;
+    }
+    else if (ref_vel > SPEED_TARGET){
+      ref_vel -= MAX_VEL_CHANGE;
+    }
+  }
+  return ref_vel;
+}
+
+// Update the trajectory
+void trajectory___update(vector<double> &next_x_vals, vector<double> &next_y_vals,
+                         vector<double> map_waypoints_s, vector<double> map_waypoints_x, vector<double> map_waypoints_y,
+                         vector<double> previous_path_x, vector<double>previous_path_y, int prev_size,
+                         double end_path_s, double car_x, double car_y, double car_yaw,
+                         int next_lane, double ref_vel) {
+  // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m
+  // later we will interpolate these waypoints with a spline and fill it in with more points
+  vector<double> ptsx;
+  vector<double> ptsy;
+
+  // reference x,y, yaw states
+  // either we will reference the starting point as where the car is or at the previous paths end point
+  double ref_x = car_x;
+  double ref_y = car_y;
+  double ref_yaw = car_yaw;
+
+  // if previous size is almost empty, use the car as starting reference
+  if (prev_size < 2) {
+    // Use two points that make the path tangent to the car
+    double prev_car_x = car_x - cos(car_yaw);
+    double prev_car_y = car_y - sin(car_yaw);
+
+    ptsx.push_back(prev_car_x);
+    ptsx.push_back(car_x);
+
+    ptsy.push_back(prev_car_y);
+    ptsy.push_back(car_y);
+  }
+  // use the previous path's end oint as starting reference
+  else {
+    // Redefine reference state as previous path end points
+    ref_x = previous_path_x[prev_size-1];
+    ref_y = previous_path_y[prev_size-1];
+
+    double ref_x_prev = previous_path_x[prev_size-2];
+    double ref_y_prev = previous_path_y[prev_size-2];
+    ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+    // Use two points that make the path tangent to the previous path's end point
+    ptsx.push_back(ref_x_prev);
+    ptsx.push_back(ref_x);
+
+    ptsy.push_back(ref_y_prev);
+    ptsy.push_back(ref_y);
+  }
+
+  // In Frenet coordinates, add evenly 30m spaced points ahead of the starting reference, of the next lane
+  vector<double> next_wp0 = getXY(end_path_s+30,D_LANES[next_lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+  vector<double> next_wp1 = getXY(end_path_s+60,D_LANES[next_lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+  vector<double> next_wp2 = getXY(end_path_s+90,D_LANES[next_lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
+
+  ptsx.push_back(next_wp0[0]);
+  ptsx.push_back(next_wp1[0]);
+  ptsx.push_back(next_wp2[0]);
+
+  ptsy.push_back(next_wp0[1]);
+  ptsy.push_back(next_wp1[1]);
+  ptsy.push_back(next_wp2[1]);
+
+  // Transform x,y of points from global into local car coordinate system
+  for (size_t i=0; i < ptsx.size(); ++i){
+    double dx = ptsx[i] - ref_x;
+    double dy = ptsy[i] - ref_y;
+
+    ptsx[i] =  dx*cos(ref_yaw) + dy*sin(ref_yaw);
+    ptsy[i] = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
+  }
+
+  // Create a spline
+  tk::spline s;
+
+  // Set (x,y) points to the spline
+  s.set_points(ptsx, ptsy);
+
+  double x_end_l = 0.0;
+  double y_end_l = 0.0;
+
+  // Start with all of the remaining previous path points from last time, if we have any
+  // Do not re-create them each time. This helps with the transitions.
+  if (prev_size > 0){
+    for (int i=0; i<prev_size; ++i){
+      next_x_vals.push_back(previous_path_x[i]);
+      next_y_vals.push_back(previous_path_y[i]);
+    }
+    double x_end = previous_path_x[prev_size-1];
+    double y_end = previous_path_y[prev_size-1];
+    // Transform last point into local car coordinate system
+    double dx = x_end - ref_x;
+    double dy = y_end - ref_y;
+    x_end_l =  dx*cos(ref_yaw) + dy*sin(ref_yaw);
+    y_end_l = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
+  }
+
+  // Add new points to previous trajectory until we have TRAJ_NPOINTS points total
+  // Here we will always output TRAJ_NPOINTS points.
+  for (int i=0; i< TRAJ_NPOINTS-prev_size; ++i) {
+    x_end_l += TRAJ_DT*ref_vel; // To drive at new ref_vel we need to space the points
+                             // along the trajectory with TRAJ_DT*ref_vel.
+                             // Because we work in the car local coordinate system,
+                             // it is ok to space the x value with this amount.
+    y_end_l = s(x_end_l);
+
+    // Transform it back to global coordinates from the car local coordinates
+    double x_end = ref_x + x_end_l*cos(ref_yaw) - y_end_l*sin(ref_yaw);
+    double y_end = ref_y + x_end_l*sin(ref_yaw) + y_end_l*cos(ref_yaw);
+
+    next_x_vals.push_back(x_end);
+    next_y_vals.push_back(y_end);
+  }
+}
 
 
 int main() {
@@ -445,6 +695,9 @@ int main() {
   // finish lane change once started
   int lane_change_count_down = 0;
 
+  // allowed to change lanes
+  bool stay_in_lane = false;
+
   // start at 0.0 velocity, and let logic apply acceleration to target velocity
   double ref_vel = 0.0;
 
@@ -452,7 +705,7 @@ int main() {
   int state = KL;
 
 
-  h.onMessage([&prev_lane,&lane,&lane_change_count_down,&ref_vel,&state,&max_s,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&prev_lane,&lane,&lane_change_count_down,&stay_in_lane,&ref_vel,&state,&max_s,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -477,12 +730,9 @@ int main() {
           double car_x = j[1]["x"]; // m
           double car_y = j[1]["y"]; // m
           double car_s = j[1]["s"]; // m
-          double car_d = j[1]["d"]; // m
+          //double car_d = j[1]["d"]; // m
           double car_yaw = deg2rad(j[1]["yaw"]); // rad
           //double car_speed = mph2mps(j[1]["speed"]); // m/s
-
-          // calculate the lane the car is in now
-          //lane      = lane_of_object(car_d);
 
           // Remainder of previous trajectory that car has not yet traversed
           auto previous_path_x = j[1]["previous_path_x"];
@@ -502,47 +752,26 @@ int main() {
           if (VERBOSE)
             cout<<"lane_change_count_down = "<<lane_change_count_down<<'\n';
 
+          // if not yet done with lane change, force car to keep lane
+          if (lane_change_count_down>0)
+            stay_in_lane = true;
+          else
+            stay_in_lane = false;
+
           // Sensor Fusion Data, a list of all objects on the same side of the road.
           auto sensor_fusion = j[1]["sensor_fusion"];
 
           json msgJson;
 
-          vector<double> next_x_vals;
-          vector<double> next_y_vals;
-
-          // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-
           //******************************************************************************************************
           // PREDICTION - Start
 
-          // simple prediction of object location at end of next trajectory
-          // -> assume they move with constant velocity
-
+          // Predict object location at end of previous trajectory
+          double dT   = (double)prev_size*TRAJ_DT;
           vector<vector<double>> predictions;
-          for (size_t i=0; i<sensor_fusion.size(); ++i){
-            //int    object_id  = sensor_fusion[i][0];
-            double object_x   = sensor_fusion[i][1];
-            double object_y   = sensor_fusion[i][2];
-            double object_vx  = sensor_fusion[i][3];
-            double object_vy  = sensor_fusion[i][4];
-            double object_s   = sensor_fusion[i][5];
-            double object_d   = sensor_fusion[i][6];
 
-            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+          predictions = predict___objects_at_end_of_previous_trajectory(sensor_fusion, dT);
 
-            object_x += object_vx*TRAJ_DURATION;
-            object_y += object_vy*TRAJ_DURATION;
-            object_s += object_speed*TRAJ_DURATION;
-
-            vector<double> prediction;
-            prediction.push_back(object_x );
-            prediction.push_back(object_y );
-            prediction.push_back(object_s );
-            prediction.push_back(object_d );
-            prediction.push_back(object_speed );
-
-            predictions.push_back(prediction);
-          }
 
           // PREDICTION - End
           //******************************************************************************************************
@@ -553,80 +782,21 @@ int main() {
 
           // determine possible successor states from current state
           vector<int> next_states;
-          next_states = possible_successor_states(lane, state, lane_change_count_down);
-
-          // for all the lanes:
-          // - calculate the miniumum speed of objects in a region around the car
-          // - calculate the open space in front of the car
-          // right now, and at end of previous trajectory.
-          vector<double> lane_speeds    = {1000.0, 1000.0, 1000.0};
-          /*
-          for (size_t i=0; i<sensor_fusion.size(); ++i){
-            double object_vx  = sensor_fusion[i][3];
-            double object_vy  = sensor_fusion[i][4];
-            double object_s   = sensor_fusion[i][5];
-            double object_d   = sensor_fusion[i][6];
-            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
-            int object_lane = lane_of_object(object_d);
-
-            //if (object_s > car_s      - SPEED_COST_REGION_BEHIND &&
-            //    object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
-            if (object_s > car_s      - SPEED_COST_REGION_BEHIND &&
-                object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
-
-              lane_speeds[object_lane] = min(lane_speeds[object_lane], object_speed);
-            }
-          }
-          */
-
-          // speed of closest car in front of us
-          vector<double> gap_closests = {1000.0,1000.0,1000.0}; // we look for the closest car in each lane that is in front of us
-          for (size_t i=0; i<sensor_fusion.size(); ++i){
-            //int    object_id  = sensor_fusion[i][0];
-            //double object_x   = sensor_fusion[i][1];
-            //double object_y   = sensor_fusion[i][2];
-            double object_vx  = sensor_fusion[i][3];
-            double object_vy  = sensor_fusion[i][4];
-            double object_s   = sensor_fusion[i][5];
-            double object_d   = sensor_fusion[i][6];
-
-            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
-
-            int object_lane = lane_of_object(object_d);
-
-            if (object_s > car_s &&
-                object_s < car_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us now and not too far away
-
-              // Calculate where the object will be at end time of our previous path
-              object_s += ((double)prev_size*TRAJ_DT*object_speed);
-
-              if ( object_s > end_path_s &&
-                   object_s < end_path_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us at end and not too far away
-                double gap = object_s - end_path_s;
-                if (gap < gap_closests[object_lane]){
-                  gap_closests[object_lane] = gap;
-                  lane_speeds[object_lane] = object_speed;
-                }
-              }
-            }
-          }
+          next_states = behavior___possible_successor_states(lane, state, stay_in_lane);
 
           // calculate the costs for each possible successor state
           vector<double> costs;
           for (int next_state : next_states){
-            double cost = calculate_cost(lane, state, next_state,
+            double cost = behavior___cost(lane, state, next_state,
                                       car_x, car_y, car_s, end_path_s,
                                       previous_path_x, previous_path_y,
-                                      sensor_fusion, predictions,
-                                      lane_speeds);
+                                      sensor_fusion, predictions);
             costs.push_back(cost);
           }
-
 
           // select successor state with lowest cost
           int index_best = min_element(costs.begin(), costs.end()) - costs.begin();
           int next_state = next_states[index_best];
-
 
 
           // BEHAVIOR - End
@@ -636,187 +806,33 @@ int main() {
           //******************************************************************************************************
           // TRAJECTORY - Start
 
+          // Determine the lane we need to drive in
+          int next_lane = trajectory___next_lane(next_state, lane);
 
-          // Check on objects in front of previous path's end
-
-          bool close_break  = false;
-          bool close_follow = false;
-          double gap_closest = 1000.0; // we look for the closest car that is in our lane, in front of us
-          double speed_closest = 0.0;
-
-          for (size_t i=0; i<sensor_fusion.size(); ++i){
-            //int    object_id  = sensor_fusion[i][0];
-            //double object_x   = sensor_fusion[i][1];
-            //double object_y   = sensor_fusion[i][2];
-            double object_vx  = sensor_fusion[i][3];
-            double object_vy  = sensor_fusion[i][4];
-            double object_s   = sensor_fusion[i][5];
-            double object_d   = sensor_fusion[i][6];
-
-            if (is_object_in_lane(object_d,lane)){
-
-              double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
-
-              // Calculate where the car will be at end time of our previous path
-              object_s += ((double)prev_size*TRAJ_DT*object_speed);
-
-              if ( object_s > end_path_s) {       // is it in front of us at end of previous trajectory ?
-                double gap = object_s - end_path_s;
-                if (gap < gap_closest){
-                  gap_closest = gap;
-                  if ( gap < GAP_TO_OBJECT_AHEAD_FOLLOW ){
-                    close_follow  = true;
-                    speed_closest = object_speed;
-                    if ( gap < GAP_TO_OBJECT_AHEAD_BREAK ){
-                      close_break = true;
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Check if we're switching lanes, and start count_down
-          if (next_state == LCL || next_state == LCR ){
-            prev_lane = lane;
+          // If we're switching lanes, start a count_down to enforce that we
+          // will finish the lane change before doing another lane change.
+          // => This avoids high jerk in case a lane change looked good at first,
+          //    but then, due to changing behaviors of the other objects, doesn't
+          //    look so good anymore and we want to move back or to yet another lane.
+          if (next_lane != lane)
             lane_change_count_down = TRAJ_NPOINTS_TO_EAT_BETWEEN_LANE_CHANGES;
-            if (VERBOSE)
-              cout<<"SWITCHING LANE - lane_change_count_down = "<<lane_change_count_down<<'\n';
-            if (next_state == LCL){
-              lane -= 1;
-            }
-            else if (next_state == LCR) {
-              lane += 1;
-            }
-          }
-
-          // set new reference velocity
-          if (close_break) {                      // really close to next car --> Break!
-            ref_vel -= MAX_VEL_CHANGE;
-          }
-          else if (close_follow){                 // close, but not too close to next car --> Follow!
-            if (ref_vel < speed_closest){
-              ref_vel += MAX_VEL_CHANGE;
-            }
-            else if (ref_vel > speed_closest){
-              ref_vel -= MAX_VEL_CHANGE;
-            }
-          }
-          else {                                  // all clear --> Go speed limit!
-            if (ref_vel < SPEED_TARGET){
-              ref_vel += MAX_VEL_CHANGE;
-            }
-            else if (ref_vel > SPEED_TARGET){
-              ref_vel -= MAX_VEL_CHANGE;
-            }
-          }
 
 
-          // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m
-          // later we will interpolate these waypoints with a spline and fill it in with more points
-          vector<double> ptsx;
-          vector<double> ptsy;
+          // Determine the new safe reference velocity that car can drive at
+          ref_vel = trajectory___ref_vel(predictions, end_path_s, next_lane, ref_vel);
 
-          // reference x,y, yaw states
-          // either we will reference the starting point as where the car is or at the previous paths end point
-          double ref_x = car_x;
-          double ref_y = car_y;
-          double ref_yaw = car_yaw;
+          // Update the trajectory
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
+          trajectory___update(next_x_vals, next_y_vals,
+                              map_waypoints_s,map_waypoints_x, map_waypoints_y,
+                              previous_path_x, previous_path_y, prev_size,
+                              end_path_s,car_x, car_y, car_yaw,
+                              next_lane, ref_vel);
 
-          // if previous size is almost empty, use the car as starting reference
-          if (prev_size < 2) {
-            // Use two points that make the path tangent to the car
-            double prev_car_x = car_x - cos(car_yaw);
-            double prev_car_y = car_y - sin(car_yaw);
-
-            ptsx.push_back(prev_car_x);
-            ptsx.push_back(car_x);
-
-            ptsy.push_back(prev_car_y);
-            ptsy.push_back(car_y);
-          }
-          // use the previous path's end oint as starting reference
-          else {
-            // Redefine reference state as previous path end points
-            ref_x = previous_path_x[prev_size-1];
-            ref_y = previous_path_y[prev_size-1];
-
-            double ref_x_prev = previous_path_x[prev_size-2];
-            double ref_y_prev = previous_path_y[prev_size-2];
-            ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
-
-            // Use two points that make the path tangent to the previous path's end point
-            ptsx.push_back(ref_x_prev);
-            ptsx.push_back(ref_x);
-
-            ptsy.push_back(ref_y_prev);
-            ptsy.push_back(ref_y);
-          }
-
-          // In Frenet coordinates, add evenly 30m spaced points ahead of the starting reference
-          vector<double> next_wp0 = getXY(end_path_s+30,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(end_path_s+60,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(end_path_s+90,D_LANES[lane],map_waypoints_s,map_waypoints_x, map_waypoints_y);
-
-          ptsx.push_back(next_wp0[0]);
-          ptsx.push_back(next_wp1[0]);
-          ptsx.push_back(next_wp2[0]);
-
-          ptsy.push_back(next_wp0[1]);
-          ptsy.push_back(next_wp1[1]);
-          ptsy.push_back(next_wp2[1]);
-
-          // Transform x,y of points from global into local car coordinate system
-          for (size_t i=0; i < ptsx.size(); ++i){
-            double dx = ptsx[i] - ref_x;
-            double dy = ptsy[i] - ref_y;
-
-            ptsx[i] =  dx*cos(ref_yaw) + dy*sin(ref_yaw);
-            ptsy[i] = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
-          }
-
-          // Create a spline
-          tk::spline s;
-
-          // Set (x,y) points to the spline
-          s.set_points(ptsx, ptsy);
-
-          double x_end_l = 0.0;
-          double y_end_l = 0.0;
-
-
-          // Start with all of the remaining previous path points from last time, if we have any
-          // Do not re-create them each time. This helps with the transitions.
-          if (prev_size > 0){
-            for (int i=0; i<prev_size; ++i){
-              next_x_vals.push_back(previous_path_x[i]);
-              next_y_vals.push_back(previous_path_y[i]);
-            }
-            double x_end = previous_path_x[prev_size-1];
-            double y_end = previous_path_y[prev_size-1];
-            // Transform last point into local car coordinate system
-            double dx = x_end - ref_x;
-            double dy = y_end - ref_y;
-            x_end_l =  dx*cos(ref_yaw) + dy*sin(ref_yaw);
-            y_end_l = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
-          }
-
-          // Add new points to previous trajectory until we have TRAJ_NPOINTS points total
-          // Here we will always output TRAJ_NPOINTS points.
-          for (int i=0; i< TRAJ_NPOINTS-prev_size; ++i) {
-            x_end_l += TRAJ_DT*ref_vel; // To drive at new ref_vel we need to space the points
-                                     // along the trajectory with TRAJ_DT*ref_vel.
-                                     // Because we work in the car local coordinate system,
-                                     // it is ok to space the x value with this amount.
-            y_end_l = s(x_end_l);
-
-            // Transform it back to global coordinates from the car local coordinates
-            double x_end = ref_x + x_end_l*cos(ref_yaw) - y_end_l*sin(ref_yaw);
-            double y_end = ref_y + x_end_l*sin(ref_yaw) + y_end_l*cos(ref_yaw);
-
-            next_x_vals.push_back(x_end);
-            next_y_vals.push_back(y_end);
-          }
+          // set lane for next cycle
+          prev_lane = lane;
+          lane      = next_lane;
 
           // TRAJECTORY - End
           //******************************************************************************************************
