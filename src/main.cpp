@@ -255,23 +255,28 @@ int lane_of_object(double d){
 }
 
 // Possible successor states for car
-vector<int> possible_successor_states(int lane, int state) {
+vector<int> possible_successor_states(int lane, int state, int lane_change_count_down) {
   vector<int> next_states;
-  next_states.push_back(state);         // each state supports self transition
-  if (state==KL){
-    if (lane==0){
-      next_states.push_back(LCR);
-    }
-    else if (lane==LANES_AVAILABLE - 1){
-      next_states.push_back(LCL);
-    }
-    else{
-      next_states.push_back(LCL);
-      next_states.push_back(LCR);
-    }
+  if (lane_change_count_down>0){
+    next_states.push_back(KL);           // first finish a lane change maneuver
   }
   else {
-    next_states.push_back(KL);
+    next_states.push_back(state);         // each state supports self transition
+    if (state==KL){
+      if (lane==0){
+        next_states.push_back(LCR);
+      }
+      else if (lane==LANES_AVAILABLE - 1){
+        next_states.push_back(LCL);
+      }
+      else{
+        next_states.push_back(LCL);
+        next_states.push_back(LCR);
+      }
+    }
+    else {
+      next_states.push_back(KL);
+    }
   }
   return next_states;
 }
@@ -433,7 +438,11 @@ int main() {
   }
 
   // start in lane 1
+  int prev_lane = 1;
   int lane = 1;
+
+  // finish lane change once started
+  int lane_change_count_down = 0;
 
   // start at 0.0 velocity, and let logic apply acceleration to target velocity
   double ref_vel = 0.0;
@@ -441,7 +450,8 @@ int main() {
   // start in state KL
   int state = KL;
 
-  h.onMessage([&lane,&ref_vel,&state,&max_s,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+
+  h.onMessage([&prev_lane,&lane,&lane_change_count_down,&ref_vel,&state,&max_s,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -470,8 +480,8 @@ int main() {
           double car_yaw = deg2rad(j[1]["yaw"]); // rad
           //double car_speed = mph2mps(j[1]["speed"]); // m/s
 
-          // calculate the lane the car is in
-          // lane = lane_of_object(car_d);
+          // calculate the lane the car is in now
+          //lane      = lane_of_object(car_d);
 
           // Remainder of previous trajectory that car has not yet traversed
           auto previous_path_x = j[1]["previous_path_x"];
@@ -485,6 +495,11 @@ int main() {
             end_path_s = car_s;
             //end_path_d = car_d;
           }
+          else if (lane_change_count_down>0){
+            lane_change_count_down -= (TRAJ_NPOINTS - prev_size);
+          }
+          if (VERBOSE)
+            cout<<"lane_change_count_down = "<<lane_change_count_down<<'\n';
 
           // Sensor Fusion Data, a list of all objects on the same side of the road.
           auto sensor_fusion = j[1]["sensor_fusion"];
@@ -537,7 +552,7 @@ int main() {
 
           // determine possible successor states from current state
           vector<int> next_states;
-          next_states = possible_successor_states(lane, state);
+          next_states = possible_successor_states(lane, state, lane_change_count_down);
 
           // for all the lanes:
           // - calculate the miniumum speed of objects in a region around the car
@@ -660,12 +675,18 @@ int main() {
             }
           }
 
-          // based on behavior determination, stay or switch lanes
-          if (next_state == LCL){
-            lane -= 1;
-          }
-          else if (next_state == LCR) {
-            lane += 1;
+          // Check if we're switching lanes, and start count_down
+          if (next_state == LCL || next_state == LCR ){
+            prev_lane = lane;
+            lane_change_count_down = TRAJ_NPOINTS;
+            if (VERBOSE)
+              cout<<"SWITCHING LANE - lane_change_count_down = "<<lane_change_count_down<<'\n';
+            if (next_state == LCL){
+              lane -= 1;
+            }
+            else if (next_state == LCR) {
+              lane += 1;
+            }
           }
 
           // set new reference velocity
