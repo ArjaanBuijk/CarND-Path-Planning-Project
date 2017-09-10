@@ -156,9 +156,18 @@ The following functions take care of the Trajectory generation.
 
 ## 7. Result and Summary
 
-The car is driving very nicely on the highway,  making good decisions when to change lanes. The lane changes are smooth and are completed before new lane changes are considered. The car will not drive into objects ahead or next to it. It is patient with making lane changes. Overall, a pretty polite, non-aggressive driver.
 
-The weakest part of the logic is that the car does not look backwards far enough, and relies a little bit on the objects behind it to adjust it's speed. If a lane change is done at very low speeds, and objects behind are coming at very high speed, they sometimes come quite close. No collission was observed though.
+The rubric points are fulfilled:
+- The car drives more than 4.32 miles without incident. The video recording provided with the project submission was interupted at 10 miles, and in other tests the car drove over 30 miles without incident.
+- The car does not go over the speed limit of 50 mph.
+- The car goes around slower traffic whenever it is safe to do and maintains a speed close to the speed limit.
+- Max Acceleration and Jerk are not exceeded.
+- The car does not have collissions
+- The car stays in its lane, <b>except that I have given it a preference to drive in the middle lane</b>!
+- The car makes lane changes that are smooth and are completed before new lane changes are considered.
+
+
+A part of the logic that could be further improved is that the car does not look backwards far enough, and relies a little bit on the objects behind it to adjust their speed. If a lane change is done at very low speeds, and objects from behind are coming at high speed, they sometimes come quite close. No collission was observed though.
 
 
 
