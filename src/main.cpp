@@ -63,6 +63,7 @@ const double MAX_VEL_CHANGE = 0.2;
 const double TRAJ_DT       = 0.02; // time between two points of trajectory
 const int    TRAJ_NPOINTS  = 50;   // number of points in trajectory
 const double TRAJ_DURATION = TRAJ_DT*TRAJ_NPOINTS; // duration of trajectory
+const int    TRAJ_NPOINTS_TO_EAT_BETWEEN_LANE_CHANGES  = 150;   // number of trajectory points to eat between lane changes
 
 // In our Finite State Machine, we consider 3 states:
 //  KL  = Keep Lane
@@ -678,7 +679,7 @@ int main() {
           // Check if we're switching lanes, and start count_down
           if (next_state == LCL || next_state == LCR ){
             prev_lane = lane;
-            lane_change_count_down = TRAJ_NPOINTS;
+            lane_change_count_down = TRAJ_NPOINTS_TO_EAT_BETWEEN_LANE_CHANGES;
             if (VERBOSE)
               cout<<"SWITCHING LANE - lane_change_count_down = "<<lane_change_count_down<<'\n';
             if (next_state == LCL){
