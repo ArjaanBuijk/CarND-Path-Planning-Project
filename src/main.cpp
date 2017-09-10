@@ -80,7 +80,7 @@ const double COLLISSION_COST_REGION_AHEAD  = 5; //m beyond end of previous path
 
 // Regions behind and ahead for speed cost calculation
 const double SPEED_COST_REGION_BEHIND =  0; //m
-const double SPEED_COST_REGION_AHEAD  = 10; //m   beyond end of previous path
+const double SPEED_COST_REGION_AHEAD  = 20; //m   beyond end of previous path
 
 
 // Checks if the SocketIO event has JSON data.
@@ -332,8 +332,11 @@ double efficiency_speed_cost(int lane, int state, int next_state,
     cost += WEIGHT_EFFICIENCY_SPEED_COST*(SPEED_LIMIT - lane_speeds[next_lane])/SPEED_LIMIT;
   }
 
-  if (VERBOSE)
+  if (VERBOSE){
+    cout<<"lane speed in lane              = "<<lane_speeds[lane]<<'\n';
+    cout<<"lane speed in next lane         = "<<lane_speeds[next_lane]<<'\n';
     cout<<"lane, next lane, speed cost     = "<<lane<<", "<<next_lane<<", "<<cost<<'\n';
+  }
   return cost;
 }
 
