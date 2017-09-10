@@ -30,6 +30,7 @@ double m2inch(double x) { return x / 0.0254; }
 
 // Highway has 6 lanes- 3 heading in each direction.
 // Each lane is 4 m wide.
+const double LANES_AVAILABLE = 3;
 const double LANE_WIDTH = 4.0;
 const vector<double> D_LANES = {0.5*LANE_WIDTH, 1.5*LANE_WIDTH, 2.5*LANE_WIDTH}; // d of left, middle, right lane center line
 
@@ -41,17 +42,36 @@ const double OBJECT_WIDTH  = inch2m(75.0);
 const double OBJECT_LENGTH = inch2m(200.0);
 
 // Speedlimit
-const double SPEED_LIMIT = mph2mps(50);
+const double SPEED_LIMIT = mph2mps(50.0);
 
 // Target velocity a little bit below the speedlimit
 const double SPEED_TARGET = mph2mps(49.5);
 
 // Flag danger when the gap with object in front is too close
-const double MIN_GAP_TO_FRONT_OBJECT = 30.0;
+const double MIN_GAP_TO_OBJECT_AHEAD = 30.0;
 
 // Change in ref_vel per cycle to use when it can accellerate or when it needs to slow down
 // This value is chosen to stay within allowed longitudinal jerk
 const double MAX_VEL_CHANGE = 0.224;
+
+// Characteristics of the trajectory that we give back to the simulator
+const double TRAJ_DT       = 0.02; // time between two points of trajectory
+const int    TRAJ_NPOINTS  = 50;   // number of points in trajectory
+const double TRAJ_DURATION = TRAJ_DT*TRAJ_NPOINTS; // duration of trajectory
+
+// In our Finite State Machine, we consider 3 states:
+//  KL  = Keep Lane
+//  LCL = Lane Change Left
+//  LCR = Lane Change Right
+enum State {KL, LCL, LCR};
+
+// Weights for the cost functions
+int WEIGHT_SPEED_COST = 1;
+
+// Regions behind and ahead for speed cost calculation
+const double SPEED_COST_REGION_BEHIND = 30; //m
+const double SPEED_COST_REGION_AHEAD  = 30; //m
+
 
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
@@ -208,6 +228,72 @@ bool is_object_in_lane(double d, int lane){
   }
 }
 
+// Helper function to get the lane of an object
+int lane_of_object(double d){
+  int lane=0;
+  for (int i=0; i<LANES_AVAILABLE; i++){
+    if ( d <= (i+1)*LANE_WIDTH)
+      return lane;
+    lane++;
+  }
+  return LANES_AVAILABLE; // when we get here, it appears object is off the road...
+}
+
+// Possible successor states for car
+vector<int> possible_successor_states(int lane, int state) {
+  vector<int> next_states;
+  next_states.push_back(state);         // each state supports self transition
+  if (state==KL){
+    if (lane==0){
+      next_states.push_back(LCR);
+    }
+    else if (lane==LANES_AVAILABLE - 1){
+      next_states.push_back(LCL);
+    }
+    else{
+      next_states.push_back(LCL);
+      next_states.push_back(LCR);
+    }
+  }
+  else {
+    next_states.push_back(KL);
+  }
+  return next_states;
+}
+
+// Speed cost:
+// We penalize lanes that drive slower than the speedlimit
+int speed_cost(int lane, int state, int next_state, vector<double> lane_speeds){
+
+  int next_lane = lane;
+  if (next_state == LCL) {
+    next_lane -= 1;
+  }
+  if (next_state == LCR) {
+    next_lane += 1;
+  }
+
+  int cost = 0.0;
+  if (lane_speeds[next_lane] < SPEED_LIMIT) {
+    cost = WEIGHT_SPEED_COST*(SPEED_LIMIT - lane_speeds[next_lane]);
+  }
+  return cost;
+}
+
+// Calculate total cost to transition to next_state
+int calculate_cost(int lane, int state, int next_state,
+                   double car_x, double car_y,
+                   vector<double> previous_path_x, vector<double> previous_path_y,
+                   vector<vector<double>> predictions,
+                   vector<double> lane_speeds){
+  int cost = 0;
+  cost+= speed_cost( lane,  state,  next_state, lane_speeds);
+  return cost;
+}
+
+
+
+
 int main() {
   uWS::Hub h;
 
@@ -254,7 +340,10 @@ int main() {
   // start at 0.0 velocity, and let logic apply acceleration to target velocity
   double ref_vel = 0.0;
 
-  h.onMessage([&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  // start in state KL
+  int state = KL;
+
+  h.onMessage([&lane,&ref_vel,&state,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -313,8 +402,93 @@ int main() {
 
           // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
 
+          //******************************************************************************************************
+          // PREDICTION - Start
+
+          // simple prediction of object location at end of next trajectory
+          // -> assume they move with constant velocity
+
+          vector<vector<double>> predictions;
+          for (size_t i=0; i<sensor_fusion.size(); ++i){
+            //int    object_id  = sensor_fusion[i][0];
+            double object_x   = sensor_fusion[i][1];
+            double object_y   = sensor_fusion[i][2];
+            double object_vx  = sensor_fusion[i][3];
+            double object_vy  = sensor_fusion[i][4];
+            double object_s   = sensor_fusion[i][5];
+            double object_d   = sensor_fusion[i][6];
+
+            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+
+            object_x += object_vx*TRAJ_DURATION;
+            object_y += object_vy*TRAJ_DURATION;
+            object_s += object_speed*TRAJ_DURATION;
+
+            vector<double> prediction;
+            prediction.push_back(object_x );
+            prediction.push_back(object_y );
+            prediction.push_back(object_s );
+            prediction.push_back(object_d );
+            prediction.push_back(object_speed );
+
+            predictions.push_back(prediction);
+          }
+
+          // PREDICTION - End
+          //******************************************************************************************************
+
 
           //******************************************************************************************************
+          // BEHAVIOR - Start
+
+          // determine possible successor states from current state
+          vector<int> next_states;
+          next_states = possible_successor_states(lane, state);
+          cout<<"Current state = "<<state<<'\n';
+          cout<<"Next possible states:\n";
+          for (int ns : next_states){
+            cout<<ns<<" ";
+          }
+          cout<<'\n';
+
+          // for all the lanes, calculate the miniumum speed of objects in a region around the car
+          vector<double> lane_speeds = {1000.0, 1000.0, 1000.0};
+          for (vector<double> prediction : predictions){
+            double object_s     = prediction[2];
+            double object_d     = prediction[3];
+            double object_speed = prediction[4];
+            if (object_s > car_s - SPEED_COST_REGION_BEHIND &&
+                object_s < car_s + SPEED_COST_REGION_AHEAD) {
+              int object_lane = lane_of_object(object_d);
+              lane_speeds[object_lane] = min(lane_speeds[object_lane], object_speed);
+            }
+          }
+
+
+          // calculate the costs for each possible successor state
+          vector<int> costs;
+          for (int next_state : next_states){
+            int cost = calculate_cost(lane, state, next_state,
+                                      car_x, car_y, previous_path_x, previous_path_y,
+                                      predictions,
+                                      lane_speeds);
+            costs.push_back(cost);
+          }
+
+
+          // select successor state with lowest cost
+          int index_best = min_element(costs.begin(), costs.end()) - costs.begin();
+          int next_state = next_states[index_best];
+
+
+          // BEHAVIOR - End
+          //******************************************************************************************************
+
+
+          //******************************************************************************************************
+          // TRAJECTORY - Start
+
+
           // Check on objects in front of previous path's end
 
           bool too_close = false;
@@ -323,9 +497,9 @@ int main() {
           double speed_closest = 0.0;
 
           for (size_t i=0; i<sensor_fusion.size(); ++i){
-            int    object_id  = sensor_fusion[i][0];
-            double object_x   = sensor_fusion[i][1];
-            double object_y   = sensor_fusion[i][2];
+            //int    object_id  = sensor_fusion[i][0];
+            //double object_x   = sensor_fusion[i][1];
+            //double object_y   = sensor_fusion[i][2];
             double object_vx  = sensor_fusion[i][3];
             double object_vy  = sensor_fusion[i][4];
             double object_s   = sensor_fusion[i][5];
@@ -336,30 +510,29 @@ int main() {
               double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
 
               // Calculate where the car will be at end time of our previous path
-              object_s += ((double)prev_size*0.02*object_speed);
+              object_s += ((double)prev_size*TRAJ_DT*object_speed);
 
               if ( object_s > end_path_s) {       // is it in front of us at end of previous trajectory ?
                 double gap = object_s - end_path_s;
                 if (gap < gap_closest){
                   index_closest = i;
                   gap_closest = gap;
-                  if ( gap < MIN_GAP_TO_FRONT_OBJECT ){
+                  if ( gap < MIN_GAP_TO_OBJECT_AHEAD ){
                     cout<<"Found a car in front, in our lane that is too close!\n";
                     too_close = true;
                     speed_closest = object_speed;
-                    // TO DO: add further logic, like:
-                    // (-) flag it for slow-down
-                    // (-) flag it for potential passing
-                    if (lane > 0){
-                      lane -= 1; // blindly pass on the left...
-                    }
-                    else if (lane<2) {
-                      lane += 1; // blindly pass on the right...
-                    }
                   }
                 }
               }
             }
+          }
+
+          // based on behavior determination, stay or switch lanes
+          if (next_state == LCL){
+            lane -= 1;
+          }
+          else if (next_state == LCR) {
+            lane += 1;
           }
 
           // set new reference velocity
@@ -380,7 +553,7 @@ int main() {
             }
           }
 
-          //******************************************************************************************************
+
           // Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m
           // later we will interpolate these waypoints with a spline and fill it in with more points
           vector<double> ptsx;
@@ -470,13 +643,13 @@ int main() {
             y_end_l = -dx*sin(ref_yaw) + dy*cos(ref_yaw);
           }
 
-          // Add new points to previous trajectory until we have 50 points total
+          // Add new points to previous trajectory until we have TRAJ_NPOINTS points total
           cout<<"ref_vel = "<<ref_vel<<'\n';
           cout<<"x_end_l = "<<x_end_l<<'\n';
-          // Here we will always output 50 points.
-          for (int i=0; i< 50-prev_size; ++i) {
-            x_end_l += 0.02*ref_vel; // To drive at new ref_vel we need to space the points
-                                     // along the trajectory with 0.02*ref_vel.
+          // Here we will always output TRAJ_NPOINTS points.
+          for (int i=0; i< TRAJ_NPOINTS-prev_size; ++i) {
+            x_end_l += TRAJ_DT*ref_vel; // To drive at new ref_vel we need to space the points
+                                     // along the trajectory with TRAJ_DT*ref_vel.
                                      // Because we work in the car local coordinate system,
                                      // it is ok to space the x value with this amount.
             y_end_l = s(x_end_l);
@@ -491,8 +664,8 @@ int main() {
             next_y_vals.push_back(y_end);
           }
 
+          // TRAJECTORY - End
           //******************************************************************************************************
-
 
           // END OF TODO
           msgJson["next_x"] = next_x_vals;
