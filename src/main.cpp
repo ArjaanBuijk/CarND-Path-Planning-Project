@@ -80,7 +80,7 @@ const double COLLISSION_COST_REGION_AHEAD  = 5; //m beyond end of previous path
 
 // Regions behind and ahead for speed cost calculation
 const double SPEED_COST_REGION_BEHIND =  0; //m
-const double SPEED_COST_REGION_AHEAD  = 20; //m   beyond end of previous path
+const double SPEED_COST_REGION_AHEAD  = 50; //m
 
 
 // Checks if the SocketIO event has JSON data.
@@ -515,6 +515,7 @@ int main() {
           // - calculate the open space in front of the car
           // right now, and at end of previous trajectory.
           vector<double> lane_speeds    = {1000.0, 1000.0, 1000.0};
+          /*
           for (size_t i=0; i<sensor_fusion.size(); ++i){
             double object_vx  = sensor_fusion[i][3];
             double object_vy  = sensor_fusion[i][4];
@@ -523,31 +524,47 @@ int main() {
             double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
             int object_lane = lane_of_object(object_d);
 
+            //if (object_s > car_s      - SPEED_COST_REGION_BEHIND &&
+            //    object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
             if (object_s > car_s      - SPEED_COST_REGION_BEHIND &&
                 object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
 
               lane_speeds[object_lane] = min(lane_speeds[object_lane], object_speed);
             }
           }
+          */
 
-          /*
-          vector<double> lane_speeds_end    = {1000.0, 1000.0, 1000.0};
-          for (vector<double> prediction : predictions){
-            double object_s     = prediction[2];
-            double object_d     = prediction[3];
-            double object_speed = prediction[4];
+          // speed of closest car in front of us
+          vector<double> gap_closests = {1000.0,1000.0,1000.0}; // we look for the closest car in each lane that is in front of us
+          for (size_t i=0; i<sensor_fusion.size(); ++i){
+            //int    object_id  = sensor_fusion[i][0];
+            //double object_x   = sensor_fusion[i][1];
+            //double object_y   = sensor_fusion[i][2];
+            double object_vx  = sensor_fusion[i][3];
+            double object_vy  = sensor_fusion[i][4];
+            double object_s   = sensor_fusion[i][5];
+            double object_d   = sensor_fusion[i][6];
+
+            double object_speed = sqrt(object_vx*object_vx + object_vy*object_vy);
+
             int object_lane = lane_of_object(object_d);
 
-            if (object_s > end_path_s){
-              lane_openspace_end[object_lane] = min(lane_openspace_end[object_lane], object_s - end_path_s );
-            }
+            if (object_s > car_s &&
+                object_s < car_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us now and not too far away
 
-            if (object_s > end_path_s - SPEED_COST_REGION_BEHIND &&
-                object_s < end_path_s + SPEED_COST_REGION_AHEAD) {
-              lane_speeds_end[object_lane] = min(lane_speeds_end[object_lane], object_speed);
+              // Calculate where the object will be at end time of our previous path
+              object_s += ((double)prev_size*TRAJ_DT*object_speed);
+
+              if ( object_s > end_path_s &&
+                   object_s < end_path_s + SPEED_COST_REGION_AHEAD) { // if it is in front of us at end and not too far away
+                double gap = object_s - end_path_s;
+                if (gap < gap_closests[object_lane]){
+                  gap_closests[object_lane] = gap;
+                  lane_speeds[object_lane] = object_speed;
+                }
+              }
             }
           }
-          */
 
           // calculate the costs for each possible successor state
           vector<double> costs;
