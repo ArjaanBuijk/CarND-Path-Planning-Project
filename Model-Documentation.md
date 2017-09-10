@@ -20,14 +20,14 @@ My project includes the following files:
 
 
 ## 2. Note on naming convention
-In this document and in the code, the following naming convention is always used.
+In this document and in the code, the following naming convention is used to distinguis between the car are we are driving and the surrounding traffic:
 
-|Name or Prefix to name|Refers to|
+|Name|Refers to|
 |-|-|
 |car|The car we are driving|
-|object|Other cars on the road|
+|object|The other vehicles on the road|
 
-The software is written using a functional design, not with classes. To group the functions per module, they are named with an common prefix, as follows:
+The software is written using a functional design, not with classes. To group the functions that belong to each module, they are named with an common prefix, as follows:
 
 |Module| Function name prefix|
 |-|-|
@@ -112,9 +112,9 @@ If objects are introduced that exhibit more erratic behavior, then our Predictio
 ## 5. Description of Behavior Module
 
 
-We implemented a conservative driving behavior, making sure to keep our distance to objects in front and that there is sufficient space before making a lane change. This allowed us to use the very simple Prediction approach described above.
+We implemented a conservative driving behavior, making sure to keep our distance to objects in front and that there is sufficient space before making a lane change. This allowed us to use the simple prediction approach described above.
 
-The Behavior Module is implemented as a Finite State Machine, with 4 states:
+The Behavior Module is implemented as a Finite State Machine, with 3 states:
 
 |State|Description|
 |-|-|
@@ -133,13 +133,13 @@ The following functions take care of the behavior planning.
 |Function| Description|
 |-|-|
 |behavior___possible_successor_states| If told to <b>stay_in_lane (*)</b>, the only successor state is KL.<br> Else the possible successor states are as defined in the Finite State Machine diagram above.<br> The function returns a vector of possible next states|
-|behavior___cost| Calculate total cost to transition to next_state, as sum of cost functions|
-|behavior___cost_collission_danger|We strongly penalize lane changes have collission danger.<br> <b>WEIGHT_SAFETY_COLLISSION_COST</b> is set so high, at 1.E10, that lane changes with collission danger are blocked.<br>This function does NOT check or penalize for collission danger if the state is KL, because collission avoidance while staying in the lane is fully handled by the Trajectory module.|
-|behavior___cost_speed| We penalize lanes that drive slower than the speed limit:<br> <b>WEIGHT_EFFICIENCY_SPEED_COST</b>\*(SPEED_LIMIT - lane_speeds[next_lane])/SPEED_LIMIT<br> with:<br><b>WEIGHT_EFFICIENCY_SPEED_COST</b>=1.0|
-|behavior___cost_target_lane|If all equal, we always prefer to drive in the middle lane. This reflects driving behavior on our Michigan roads. It has the advantage that it is less likely to get caught in a pocket of slow traffic with inability to get out. The cost function is given by:<br> <b>WEIGHT_TARGET_LANE_COST</b>\*(TARGET_LANE-next_lane)\*(TARGET_LANE-next_lane)<br>This cost function must give an extremely small contribution to the overall cost, achieved by setting:<br><b>WEIGHT_TARGET_LANE_COST</b>=1.E-6|
+|behavior___cost| Calculate total cost to transition to next_state, as the sum of several cost functions|
+|behavior___cost_collission_danger|We strongly penalize lane changes that have a collission danger.<br> <b>WEIGHT_SAFETY_COLLISSION_COST</b> is set so high, at 1.E10, that lane changes with collission danger are blocked.<br>If the next state is KL, the function does NOT check or penalize for collission danger , because collission avoidance while staying in the lane is fully handled by the Trajectory module.|
+|behavior___cost_speed| We penalize lanes that drive slower than the speed limit:<br><br> <b>WEIGHT_EFFICIENCY_SPEED_COST</b>\*<br>(SPEED_LIMIT-lane_speed)/SPEED_LIMIT<br><br> with:<br><b>WEIGHT_EFFICIENCY_SPEED_COST</b>=1.0|
+|behavior___cost_target_lane|If all equal, we prefer to drive in the middle lane. This reflects driving behavior on our Michigan roads. It has the advantage that it is less likely to get caught in a pocket of slow traffic with inability to get out. The cost function for this is given by:<br><br> <b>WEIGHT_TARGET_LANE_COST</b>\*<br>(TARGET_LANE-next_lane)^2<br><br>This cost function must give an extremely small contribution to the overall cost, achieved by setting:<br><b>WEIGHT_TARGET_LANE_COST</b>=1.E-6|
 
 
-(*) A logic was implemented to avoid that the car makes too quick a succession of lane changes. This leads to excessive jerk and must also be avoided to ensure predictable driving. A simple but effective logic is used. Each time the state changes to LCL or LCR, indicating a lane change is starting, a counter is initialized with the number of trajectory points that must be consumed by the simulator before a new lane change will be permitted. The name of this counter is <b>lane_change_count_down</b>, and it is initialized to <b>150</b> points. Each time the simulator returns the data, we calculate how many points of the trajectory it consumed, and subtract this from the counter. The boolean <b>stay_in_lane</b> will remain true until the counter has reached zero.
+(*) A logic was implemented to avoid that the car makes a rapid succession of lane changes. Too quick a succession of lane changes would lead to excessive jerk and must be avoided. It must also be avoided to ensure predictable driving behavior for the surrounding traffic. A simple but effective logic is used. Each time the state changes to LCL or LCR, indicating a lane change is starting, a counter is initialized with the number of trajectory points that must be consumed by the simulator before a new lane change will be permitted. The name of this counter is <b>lane_change_count_down</b>, and it is initialized to <b>150</b> points. Each cycle when the simulator returns the data, we calculate how many points of the trajectory it consumed, and subtract this from the counter. The boolean <b>stay_in_lane</b> will remain true until the counter has reached zero.
 
 
 ## 6. Description of Trajectory Module
@@ -150,7 +150,7 @@ The following functions take care of the Trajectory generation.
 |-|-|
 |trajectory___next_lane| Determines the next lane the car will move too (or stay in), using the maneuver recommended by the Bavior module|
 |trajectory___ref_vel|Determines the new safe reference velocity that car can drive at, in the next lane.<br> Strict collision avoidance with the closest object in front of the car in the next lane is enforced.<br>If we are far enough (<b>GAP_TO_OBJECT_AHEAD_FOLLOW</b>=30m), then we will follow it with the object's speed, but if we are too close (<b>GAP_TO_OBJECT_AHEAD_BREAK</b>=15m) we will brake to increase the distance.|
-|trajectory___update| Defines the new trajectory:<br>We re-use that part of the trajectory from the previous cycle that the simulator has not yet consumed, and extend it with new points to reflect the maneuver recommended by the Behavior module. We always define a trajectory with a fixed number of points (<b>TRAJ_NPOINTS</b>=50). <br>The points we add to the trajectory, typically between 4-10, are defined along a spline that is defined in the car's local coordinate system and 'merges' with the next lane's center line at 30m distance in ahead of the previous path's end. The spline then also goes through the next lanes's center line at 60m and 90m distance.<br>The points we add to the remainder of the previous path are spaced with a distance that reflects the new reference velocity.<br> This approach works really nice to avoid jerk and completely eliminates the need to use Polynial Trajectory Generation (PTG).
+|trajectory___update| Defines the new trajectory:<br>We re-use that part of the trajectory from the previous cycle that the simulator has not yet consumed, and extend it with new points to reflect the maneuver recommended by the Behavior module. We always define a trajectory with a fixed number of points (<b>TRAJ_NPOINTS</b>=50). <br>The points we add to the trajectory, typically between 4-10, are defined along a spline that is defined in the car's local coordinate system and 'merges' with the next lane's center line at 30m distance ahead of the previous path's end. The spline also goes through the next lanes's center line at 60m and 90m distance.<br>The points we add to the remainder of the previous path are spaced with a distance that reflects the new reference velocity.<br> This approach works really nice to avoid jerk and completely eliminates the need to use Polynial Trajectory Generation (PTG).
 
 
 ## 7. Result and Summary
