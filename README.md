@@ -4,9 +4,6 @@
 
 ---
 
-# Path Planning Project
----
-
 The goals of this project are the following:
 
 * Implement Prediction, Behavior Planner and Trajectory modules for highway driving.
