@@ -20,7 +20,7 @@ The goals of this project are the following:
 My project includes the following files:
 
 - [<b>C++</b> - The source code](https://github.com/ArjaanBuijk/CarND-Path-Planning-Project/tree/master/src)
-- [<b>Model-Documentation.md</b> - A summary of the project](https://github.com/ArjaanBuijk/CarND-Path-Planning-Project/blob/master/Model-Documentation.md)
+- [<b>README.md</b> - A summary of the project](https://github.com/ArjaanBuijk/CarND-Path-Planning-Project/blob/master/README.md)
 - [<b>video_MPC.mp4</b> - Video showing the car driving on the highway for 10 miles without incidents](https://github.com/ArjaanBuijk/CarND-Path-Planning-Project/blob/master/videoProject.mp4)<br>(short version showing first 1.75 miles is embedded here as an animated gif)
     ![](https://github.com/ArjaanBuijk/CarND-Path-Planning-Project/blob/master/images/videoProject.gif?raw=true)
 
